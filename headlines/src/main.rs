@@ -4,15 +4,26 @@ use eframe::{ egui, run_native, NativeOptions, App };
 use headlines::{ Headlines, PADDING };
 
 impl App for Headlines {
-  fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-    self.render_top_panel(ctx);
-    render_footer(ctx);
-    egui::CentralPanel::default().show(ctx, |ui| {
-      render_header(ui);
-      egui::ScrollArea::vertical().show(ui, |ui| {
-        self.render_news_cards(ui);
+  fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+
+    if self.config.dark_mode {
+      ctx.set_visuals(egui::Visuals::dark());
+    } else {
+      ctx.set_visuals(egui::Visuals::light());
+    }
+
+    if !self.api_key_initialized {
+      self.render_config(ctx);
+    } else {
+      self.render_top_panel(ctx, frame);
+      render_footer(ctx);
+      egui::CentralPanel::default().show(ctx, |ui| {
+        render_header(ui);
+        egui::ScrollArea::vertical().show(ui, |ui| {
+          self.render_news_cards(ui);
+        });
       });
-    });
+    }
   }
 }
 
@@ -40,6 +51,7 @@ fn render_header(ui: &mut egui::Ui) {
 }
 
 fn main() -> eframe::Result<()> {
+  tracing_subscriber::fmt::init();
   let app = "Headlines";
   let mut native_options = NativeOptions::default();
   native_options.initial_window_size = Some(egui::Vec2::new(540., 640.));

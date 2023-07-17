@@ -3,33 +3,69 @@ use eframe::{
   CreationContext,
   epaint::Color32
 };
+use serde::{ Serialize, Deserialize };
+use newsapi::NewsAPI;
 
 pub const PADDING: f32 = 5.0;
 const WHITE: Color32 = Color32::from_rgb(255, 255, 255);
+const BLACK: Color32 = Color32::from_rgb(0, 0, 0);
 const CYAN: Color32 = Color32::from_rgb(0, 255, 255);
+const COL: Color32 = Color32::from_rgb(100, 178, 200);
 
-struct NewsCardData {
-  title: String,
-  desc: String,
-  url: String
+fn fetch_news(api_key: &str, articles: &mut Vec<NewsCardData>) {
+  if let Ok(response) = NewsAPI::new(api_key).fetch() {
+    let resp_articles = response.articles();
+    for a in resp_articles.iter() {
+      let news = NewsCardData {
+        title: a.title().to_string(),
+        url: a.url().to_string(),
+        desc: a.desc().map(|s| s.to_string()).unwrap_or("...".to_string())
+      };
+      articles.push(news);
+    }
+  }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct HeadlinesConfig {
+  pub dark_mode: bool,
+  pub api_key: String
+}
+
+impl Default for HeadlinesConfig {
+  fn default() -> Self {
+    Self {
+      dark_mode: true,
+      api_key: String::new()
+    }
+  }
+}
+
+pub struct NewsCardData {
+  pub title: String,
+  pub desc: String,
+  pub url: String
 }
 
 #[derive(Default)]
 pub struct Headlines {
-  articles: Vec<NewsCardData>
+  pub articles: Vec<NewsCardData>,
+  pub config: HeadlinesConfig,
+  pub api_key_initialized: bool
 }
 
 impl Headlines {
   pub fn new(_cc: &CreationContext<'_>) -> Headlines {
-    let iter = (0..20).map(|a| NewsCardData {
-      title: format!("Title {}", a),
-      desc: format!("Description: {}", a),
-      url: format!("https://example.com/{}", a)
-    });
+
+    let config: HeadlinesConfig = confy::load("headlines", None).unwrap_or_default();
     
     let mut headlines = Headlines {
-      articles: Vec::from_iter(iter)
+      articles: vec![],
+      config,
+      api_key_initialized: false
     };
+
+    fetch_news(&headlines.config.api_key, &mut headlines.articles);
     headlines.configure_fonts(&_cc.egui_ctx);
 
     headlines
@@ -54,6 +90,7 @@ impl Headlines {
       (egui::TextStyle::Button, FontId::new(8.0, egui::FontFamily::Proportional)),
       (egui::TextStyle::Monospace,FontId::new(8.0,egui::FontFamily::Proportional)),
       (egui::TextStyle::Name("Controls".into()), FontId::new(12.0,egui::FontFamily::Proportional)),
+      (egui::TextStyle::Name("Theme".into()), FontId::new(15.0,egui::FontFamily::Proportional)),
     ].into();
 
     ctx.set_fonts(font_def);
@@ -64,11 +101,19 @@ impl Headlines {
     for a in &self.articles {
       ui.add_space(PADDING);
       let title = format!("► {}", a.title);
-      ui.colored_label(WHITE, title);
+      if self.config.dark_mode {
+        ui.colored_label(WHITE, title);
+      } else {
+        ui.colored_label(BLACK, title);
+      }
       ui.add_space(PADDING);
       let desc = egui::RichText::new(&a.desc).text_style(egui::TextStyle::Button);
       ui.add(Label::new(desc));
-      ui.style_mut().visuals.hyperlink_color = CYAN;
+      if self.config.dark_mode {
+        ui.style_mut().visuals.hyperlink_color = CYAN;
+      } else {
+        ui.style_mut().visuals.hyperlink_color = COL;
+      }
       ui.add_space(PADDING);
       ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
         ui.add(Hyperlink::from_label_and_url("Read More »", &a.url));
@@ -78,7 +123,7 @@ impl Headlines {
     }
   }
 
-  pub(crate) fn render_top_panel(&self, ctx: &egui::Context) {
+  pub(crate) fn render_top_panel(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
     TopBottomPanel::top("top_panel").show(ctx, |ui| {
       egui::menu::bar(ui, |ui| {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {
@@ -87,13 +132,47 @@ impl Headlines {
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
           let close = egui::RichText::new("❌").text_style(egui::TextStyle::Name("Controls".into()));
-          let refresh = egui::RichText::new("↻").text_style(egui::TextStyle::Name("Controls".into()));
-          let theme = egui::RichText::new("🌙").text_style(egui::TextStyle::Name("Controls".into()));
+          let refresh = egui::RichText::new("🔃").text_style(egui::TextStyle::Name("Controls".into()));
+          let theme = egui::RichText::new({
+            if self.config.dark_mode {
+              "☀"
+            } else {
+              "☽"
+            }
+          }).text_style(egui::TextStyle::Name("Theme".into()));
           let close_btn = ui.add(egui::Button::new(close));
-          let close_btn = ui.add(egui::Button::new(refresh));
-          let close_btn = ui.add(egui::Button::new(theme));
+          let refresh_btn = ui.add(egui::Button::new(refresh));
+          let theme_btn = ui.add(egui::Button::new(theme));
+
+          if close_btn.clicked() {
+            frame.close();
+          }
+          if theme_btn.clicked() {
+            self.config.dark_mode = !self.config.dark_mode;
+          }
         });
       })
+    });
+  }
+
+  pub fn render_config(&mut self, ctx: &egui::Context) {
+    egui::Window::new("Configuration").show(ctx, |ui| {
+      ui.add(Label::new("Enter your API KEY for newsapi.org"));
+      let text_input = ui.text_edit_singleline(&mut self.config.api_key);
+      if text_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        if let Err(e) = confy::store("headlines", None, HeadlinesConfig {
+          dark_mode: self.config.dark_mode,
+          api_key: self.config.api_key.to_string()
+        }) {
+          tracing::error!("Failed saving App State: {}", e);
+        }
+
+        self.api_key_initialized = true;
+        
+        tracing::error!("API KEY set");
+      }
+      ui.add(Label::new("If you haven't registered for the API KEY, head over to"));
+      ui.add(Hyperlink::new("https://newsapi.org"));
     });
   }
 }
